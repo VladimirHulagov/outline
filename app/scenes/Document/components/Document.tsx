@@ -134,7 +134,11 @@ function DocumentScene({
         new AllSelection(editor.view.state.doc)
       );
       toast.success(t("Document restored"));
-      history.replace(document.url, history.location.state);
+      history.replace(document.url, {
+        ...history.location.state,
+        restore: undefined,
+        revisionId: undefined,
+      });
     }
   }, [location, replaceSelection, t, history, document.url]);
 
