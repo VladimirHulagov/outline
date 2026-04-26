@@ -17,6 +17,7 @@ import { collectionTools } from "@server/tools/collections";
 import { commentTools } from "@server/tools/comments";
 import { documentTools } from "@server/tools/documents";
 import { fetchTool } from "@server/tools/fetch";
+import { revisionTools } from "@server/tools/revisions";
 import { userTools } from "@server/tools/users";
 import { version } from "../../../package.json";
 
@@ -56,6 +57,7 @@ function createMcpServer(scopes: string[], guidance?: string): McpServer {
   commentTools(server, scopes);
   documentTools(server, scopes);
   fetchTool(server, scopes);
+  revisionTools(server, scopes);
   userTools(server, scopes);
 
   return server;
