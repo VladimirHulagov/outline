@@ -1,0 +1,75 @@
+# Reproducible build from GitHub — clones our fork at a specific ref.
+# Usage:
+#   sudo docker build -t outline-patched:v1.7.0-custom1 \
+#     -f Dockerfile.git \
+#     --build-arg GIT_REF=v1.7.0-custom1 \
+#     /mnt/services/outline/outline
+#
+# If GIT_REF is a commit hash (not a tag/branch), the clone uses --no-checkout first.
+
+ARG APP_PATH=/opt/outline
+ARG GIT_REPO=https://github.com/VladimirHulagov/outline.git
+ARG GIT_REF=v1.7.0-custom1
+
+# ---
+FROM node:24.15.0 AS deps
+
+ARG APP_PATH
+ARG GIT_REPO
+ARG GIT_REF
+WORKDIR $APP_PATH
+
+RUN apt-get update && apt-get install -y cmake git && rm -rf /var/lib/apt/lists/*
+
+# Clone our fork at the specified ref (tag, branch, or commit)
+RUN git clone --depth=1 "$GIT_REPO" . && \
+    git fetch --depth=1 origin "$GIT_REF" && \
+    git checkout "$GIT_REF"
+
+RUN corepack enable
+ENV NODE_OPTIONS="--max-old-space-size=24000"
+RUN yarn install --immutable --network-timeout 1000000 && \
+    yarn cache clean
+RUN yarn build
+RUN yarn workspaces focus --production && \
+    yarn cache clean
+
+ENV PORT=3000
+
+# ---
+FROM node:24.15.0-slim AS runner
+
+LABEL org.opencontainers.image.source="https://github.com/VladimirHulagov/outline"
+
+ARG APP_PATH
+WORKDIR $APP_PATH
+ENV NODE_ENV=production
+
+RUN addgroup --gid 1001 nodejs && \
+    adduser --uid 1001 --ingroup nodejs nodejs && \
+    mkdir -p /var/lib/outline && \
+    chown -R nodejs:nodejs /var/lib/outline && \
+    chown -R nodejs:nodejs $APP_PATH
+
+COPY --from=deps --chown=nodejs:nodejs $APP_PATH/build ./build
+COPY --from=deps --chown=nodejs:nodejs $APP_PATH/server ./server
+COPY --from=deps --chown=nodejs:nodejs $APP_PATH/public ./public
+COPY --from=deps --chown=nodejs:nodejs $APP_PATH/.sequelizerc ./.sequelizerc
+COPY --from=deps --chown=nodejs:nodejs $APP_PATH/node_modules ./node_modules
+COPY --from=deps --chown=nodejs:nodejs $APP_PATH/package.json ./package.json
+
+RUN apt-get update && apt-get install -y wget && rm -rf /var/lib/apt/lists/*
+
+ENV FILE_STORAGE_LOCAL_ROOT_DIR=/var/lib/outline/data
+RUN mkdir -p "$FILE_STORAGE_LOCAL_ROOT_DIR" && \
+    chown -R nodejs:nodejs "$FILE_STORAGE_LOCAL_ROOT_DIR" && \
+    chmod 1777 "$FILE_STORAGE_LOCAL_ROOT_DIR"
+
+VOLUME /var/lib/outline/data
+
+USER nodejs
+
+HEALTHCHECK --interval=1m CMD wget -qO- "http://localhost:${PORT:-3000}/_health" | grep -q "OK" || exit 1
+
+EXPOSE 3000
+CMD ["node", "build/server/index.js"]
