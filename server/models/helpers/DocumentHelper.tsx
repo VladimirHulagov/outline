@@ -1,4 +1,5 @@
 import { Node, Fragment, type NodeType } from "prosemirror-model";
+import { Transform } from "prosemirror-transform";
 import ukkonen from "ukkonen";
 import { updateYFragment, yDocToProsemirrorJSON } from "y-prosemirror";
 import * as Y from "yjs";
@@ -711,7 +712,9 @@ export class DocumentHelper {
         doc = existingDoc.copy(newDoc.content.append(existingDoc.content));
       }
     } else {
+      const oldDocForMarks = DocumentHelper.toProsemirror(document);
       doc = parser.parse(text);
+      doc = DocumentHelper.reapplyCommentMarks(doc, oldDocForMarks);
     }
 
     document.content = doc.toJSON();
@@ -739,6 +742,70 @@ export class DocumentHelper {
     }
 
     return document;
+  }
+
+  /**
+   * Re-apply comment marks from an old document onto matching text in a new
+   * document. Used after markdown re-parsing (replace mode) to preserve
+   * comment anchors on text that survived the rewrite.
+   *
+   * @param newDoc The newly parsed document to add marks to.
+   * @param oldDoc The original document to collect comment marks from.
+   * @returns The new document with matching comment marks re-applied.
+   */
+  private static reapplyCommentMarks(newDoc: Node, oldDoc: Node): Node {
+    const commentMarks: Array<{
+      attrs: Record<string, unknown>;
+      text: string;
+    }> = [];
+
+    oldDoc.descendants((node) => {
+      node.marks.forEach((mark) => {
+        if (
+          mark.type.name === "comment" &&
+          !commentMarks.some((m) => m.attrs.id === mark.attrs.id)
+        ) {
+          commentMarks.push({
+            attrs: mark.attrs,
+            text: node.textContent,
+          });
+        }
+      });
+      return true;
+    });
+
+    if (commentMarks.length === 0) {
+      return newDoc;
+    }
+
+    const transform = new Transform(newDoc);
+
+    for (const mark of commentMarks) {
+      if (!mark.text) {
+        continue;
+      }
+
+      let applied = false;
+      newDoc.descendants((node, pos) => {
+        if (applied) {
+          return false;
+        }
+        if (node.isText && node.text) {
+          const idx = node.text.indexOf(mark.text);
+          if (idx >= 0) {
+            transform.addMark(
+              pos + idx,
+              pos + idx + mark.text.length,
+              schema.marks.comment.create(mark.attrs)
+            );
+            applied = true;
+          }
+        }
+        return true;
+      });
+    }
+
+    return transform.doc;
   }
 
   /**

@@ -28,6 +28,7 @@ import {
   getDocumentBreadcrumb,
   optionalString,
   pathToUrl,
+  validateDocumentId,
   withTracing,
 } from "./util";
 import { StatusFilter, TextEditMode } from "@shared/types";
@@ -453,6 +454,11 @@ export function documentTools(server: McpServer, scopes: string[]) {
       },
       withTracing("move_document", async (input, context) => {
         try {
+          const idError = validateDocumentId(input.id);
+          if (idError) {
+            return idError;
+          }
+
           const ctx = buildAPIContext(context);
           const { user } = ctx.state.auth;
 
@@ -576,7 +582,7 @@ export function documentTools(server: McpServer, scopes: string[]) {
             .enum(TextEditMode)
             .optional()
             .describe(
-              'How to apply the text update. "replace" (default) replaces the entire document content. "append" adds text to the end. "prepend" adds text to the beginning. "patch" finds the exact markdown specified in findText and replaces only that portion, preserving the rest of the document including any rich formatting that cannot be represented in markdown.'
+              'How to apply the text update. "append" (default) adds text to the end. "prepend" adds text to the beginning. "patch" finds the exact markdown specified in findText and replaces only that portion, preserving comment anchors, highlights, and other non-markdown formatting. "replace" overwrites the entire document from markdown — DESTROYS all comment anchors and non-markdown formatting; avoid unless intentionally rewriting everything.'
             ),
           findText: optionalString().describe(
             'Required when editMode is "patch". The exact markdown substring to find in the document. This should be copied verbatim from the document\'s existing markdown content. The first occurrence will be replaced with the text parameter. Can span multiple blocks (paragraphs, headings, etc).'
@@ -614,6 +620,11 @@ export function documentTools(server: McpServer, scopes: string[]) {
       },
       withTracing("update_document", async (input, context) => {
         try {
+          const idError = validateDocumentId(input.id);
+          if (idError) {
+            return idError;
+          }
+
           const ctx = buildAPIContext(context);
           const { user } = ctx.state.auth;
 
@@ -643,6 +654,7 @@ export function documentTools(server: McpServer, scopes: string[]) {
             updated = await documentUpdater(ctx, {
               document,
               ...input,
+              editMode: input.editMode ?? TextEditMode.Append,
             });
 
             // Every save increments revisionCount, so an unchanged count means
