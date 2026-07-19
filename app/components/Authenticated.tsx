@@ -1,5 +1,5 @@
 import { observer } from "mobx-react";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Redirect } from "react-router-dom";
 import useCurrentUser from "~/hooks/useCurrentUser";
@@ -16,12 +16,23 @@ const Authenticated = ({ children }: Props) => {
   const { i18n } = useTranslation();
   const user = useCurrentUser({ rejectOnEmpty: false });
   const language = user?.language;
+  const logoutCalled = useRef(false);
 
   // Watching for language changes here as this is the earliest point we might have the user
   // available and means we can start loading translations faster
   useEffect(() => {
     void changeLanguage(language, i18n);
   }, [i18n, language]);
+
+  useEffect(() => {
+    if (!auth.authenticated && !auth.isFetching && !logoutCalled.current) {
+      logoutCalled.current = true;
+      void auth.logout({
+        savePath: true,
+        clearCache: false,
+      });
+    }
+  }, [auth.authenticated, auth.isFetching, auth]);
 
   if (auth.authenticated) {
     return children;
@@ -30,11 +41,6 @@ const Authenticated = ({ children }: Props) => {
   if (auth.isFetching) {
     return <LoadingIndicator />;
   }
-
-  void auth.logout({
-    savePath: true,
-    clearCache: false,
-  });
 
   if (auth.logoutRedirectUri) {
     window.location.href = auth.logoutRedirectUri;
