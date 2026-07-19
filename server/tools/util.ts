@@ -5,6 +5,8 @@ import { addTags } from "@server/logging/tracer";
 import { traceFunction } from "@server/logging/tracing";
 import { type APIContext, AuthenticationType } from "@server/types";
 import type { NavigationNode } from "@shared/types";
+import isUUID from "validator/lib/isUUID";
+import { UrlHelper } from "@shared/utils/UrlHelper";
 
 interface McpContext {
   authInfo?: AuthInfo;
@@ -152,4 +154,23 @@ export function pathToUrl(team: Team, input: Record<string, unknown>) {
   }
 
   return input;
+}
+
+/**
+ * Validates that a document ID is in an accepted format (full UUID or urlId).
+ * Returns a descriptive error if the format is invalid, or void if valid.
+ *
+ * @param id - the document ID to validate.
+ * @returns a formatted error response if invalid, or void if valid.
+ */
+export function validateDocumentId(id: string): CallToolResult | void {
+  if (isUUID(id)) {
+    return;
+  }
+  if (UrlHelper.SLUG_URL_REGEX.test(id)) {
+    return;
+  }
+  return error(
+    `Invalid document ID format: "${id}". Expected a full UUID (e.g. "fb746f7d-6099-4ff9-a96a-90c942db45df") or a urlId from the document URL (e.g. "aBcDeFgHiJk").`
+  );
 }

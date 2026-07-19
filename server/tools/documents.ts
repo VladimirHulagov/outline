@@ -18,6 +18,7 @@ import {
   buildSiblingIndexMap,
   getActorFromContext,
   pathToUrl,
+  validateDocumentId,
   withTracing,
 } from "./util";
 import { TextEditMode } from "@shared/types";
@@ -406,6 +407,11 @@ export function documentTools(server: McpServer, scopes: string[]) {
       },
       withTracing("move_document", async (input, context) => {
         try {
+          const idError = validateDocumentId(input.id);
+          if (idError) {
+            return idError;
+          }
+
           const ctx = buildAPIContext(context);
           const { user } = ctx.state.auth;
 
@@ -525,7 +531,7 @@ export function documentTools(server: McpServer, scopes: string[]) {
             .enum(TextEditMode)
             .optional()
             .describe(
-              'How to apply the text update. "replace" (default) replaces the entire document content. "append" adds text to the end. "prepend" adds text to the beginning. "patch" finds the exact markdown specified in findText and replaces only that portion, preserving the rest of the document including any rich formatting that cannot be represented in markdown.'
+              'How to apply the text update. "append" (default) adds text to the end. "prepend" adds text to the beginning. "patch" finds the exact markdown specified in findText and replaces only that portion, preserving comment anchors, highlights, and other non-markdown formatting. "replace" overwrites the entire document from markdown — DESTROYS all comment anchors and non-markdown formatting; avoid unless intentionally rewriting everything.'
             ),
           findText: z
             .string()
@@ -559,12 +565,24 @@ export function documentTools(server: McpServer, scopes: string[]) {
             .describe(
               "Set to true to publish a draft document, or false to convert a published document back to a draft."
             ),
+          includeText: z
+            .boolean()
+            .optional()
+            .describe(
+              "Whether to include the full document text in the response. Defaults to false to avoid flooding the context window with large documents."
+            ),
         },
       },
       withTracing("update_document", async (input, context) => {
         try {
+          const idError = validateDocumentId(input.id);
+          if (idError) {
+            return idError;
+          }
+
           const ctx = buildAPIContext(context);
           const { user } = ctx.state.auth;
+          const { includeText: wantText = false } = input;
 
           const document = await Document.findByPk(input.id, {
             userId: user.id,
@@ -586,6 +604,7 @@ export function documentTools(server: McpServer, scopes: string[]) {
             updated = await documentUpdater(ctx, {
               document,
               ...input,
+              editMode: input.editMode ?? TextEditMode.Append,
             });
           }
 
@@ -594,22 +613,23 @@ export function documentTools(server: McpServer, scopes: string[]) {
             updated,
             {
               includeData: false,
-              includeText: true,
+              includeText: wantText,
               includeUpdatedAt: true,
             }
           );
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify(pathToUrl(user.team, attributes)),
-              },
-              {
-                type: "text" as const,
-                text: String(text ?? ""),
-              },
-            ],
-          } satisfies CallToolResult;
+          const content: CallToolResult["content"] = [
+            {
+              type: "text" as const,
+              text: JSON.stringify(pathToUrl(user.team, attributes)),
+            },
+          ];
+          if (wantText && text !== undefined) {
+            content.push({
+              type: "text" as const,
+              text: String(text),
+            });
+          }
+          return { content } satisfies CallToolResult;
         } catch (message) {
           return error(message);
         }
