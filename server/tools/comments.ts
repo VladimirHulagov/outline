@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { Op } from "sequelize";
 import type { FindOptions, WhereOptions } from "sequelize";
@@ -226,7 +227,7 @@ export function commentTools(server: McpServer, scopes: string[]) {
       {
         title: "Create comment",
         description:
-          "Creates a new comment on a document. Provide the comment content as markdown text. Optionally nest it as a reply under an existing comment.",
+          "Creates a new comment on a document. Provide the comment content as markdown text. Optionally nest it as a reply under an existing comment. To create an inline comment anchored to specific text in the document, provide anchorText — the first occurrence of that text will be highlighted.",
         annotations: {
           idempotentHint: false,
           readOnlyHint: false,
@@ -242,23 +243,50 @@ export function commentTools(server: McpServer, scopes: string[]) {
             .describe(
               "The parent comment ID to reply to. Omit for a top-level comment."
             ),
+          anchorText: z
+            .string()
+            .optional()
+            .describe(
+              "Text in the document to anchor this comment to. The first occurrence of this exact text will be highlighted. If omitted, the comment is created without an inline anchor."
+            ),
         },
       },
       withTracing(
         "create_comment",
-        async ({ documentId, text, parentCommentId }, context) => {
+        async ({ documentId, text, anchorText, parentCommentId }, context) => {
           try {
             const ctx = buildAPIContext(context);
             const { user } = ctx.state.auth;
 
             const document = await Document.findByPk(documentId, {
               userId: user.id,
+              includeState: true,
             });
             authorize(user, "comment", document);
+
+            let commentId: string | undefined;
+
+            if (anchorText) {
+              commentId = randomUUID();
+              const anchored = DocumentHelper.addCommentAnchor(
+                document!,
+                anchorText,
+                commentId,
+                user.id
+              );
+              if (!anchored) {
+                return error(
+                  `Anchor text not found in document: "${anchorText.slice(0, 80)}"`
+                );
+              }
+              document!.lastModifiedById = user.id;
+              await document!.saveWithCtx(ctx);
+            }
 
             const data = commentParser.parse(text).toJSON();
 
             const comment = await Comment.createWithCtx(ctx, {
+              id: commentId,
               data,
               createdById: user.id,
               documentId,

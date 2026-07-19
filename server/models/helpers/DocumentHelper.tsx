@@ -1,5 +1,6 @@
 import { JSDOM } from "jsdom";
-import { Node, Fragment, type NodeType } from "prosemirror-model";
+import { Node, Fragment, type Mark, type NodeType } from "prosemirror-model";
+import { Transform } from "prosemirror-transform";
 import ukkonen from "ukkonen";
 import { updateYFragment, yDocToProsemirrorJSON } from "y-prosemirror";
 import * as Y from "yjs";
@@ -633,7 +634,9 @@ export class DocumentHelper {
         doc = existingDoc.copy(newDoc.content.append(existingDoc.content));
       }
     } else {
+      const oldDocForMarks = DocumentHelper.toProsemirror(document);
       doc = parser.parse(text);
+      doc = DocumentHelper.reapplyCommentMarks(doc, oldDocForMarks);
     }
 
     document.content = doc.toJSON();
@@ -895,6 +898,140 @@ export class DocumentHelper {
   }
 
   /**
+   * Re-apply comment marks from an old document onto matching text in a new
+   * document. Used after markdown re-parsing (replace mode) to preserve
+   * comment anchors on text that survived the rewrite.
+   *
+   * @param newDoc The newly parsed document to add marks to.
+   * @param oldDoc The original document to collect comment marks from.
+   * @returns The new document with matching comment marks re-applied.
+   */
+  private static reapplyCommentMarks(newDoc: Node, oldDoc: Node): Node {
+    const commentMarks: Array<{
+      attrs: Record<string, unknown>;
+      text: string;
+    }> = [];
+
+    oldDoc.descendants((node) => {
+      node.marks.forEach((mark) => {
+        if (
+          mark.type.name === "comment" &&
+          !commentMarks.some((m) => m.attrs.id === mark.attrs.id)
+        ) {
+          commentMarks.push({
+            attrs: mark.attrs,
+            text: node.textContent,
+          });
+        }
+      });
+      return true;
+    });
+
+    if (commentMarks.length === 0) {
+      return newDoc;
+    }
+
+    const transform = new Transform(newDoc);
+
+    for (const mark of commentMarks) {
+      if (!mark.text) {
+        continue;
+      }
+
+      let applied = false;
+      newDoc.descendants((node, pos) => {
+        if (applied) {
+          return false;
+        }
+        if (node.isText && node.text) {
+          const idx = node.text.indexOf(mark.text);
+          if (idx >= 0) {
+            transform.addMark(
+              pos + idx,
+              pos + idx + mark.text.length,
+              schema.marks.comment.create(mark.attrs)
+            );
+            applied = true;
+          }
+        }
+        return true;
+      });
+    }
+
+    return transform.doc;
+  }
+
+  /**
+   * Add a comment mark to the first occurrence of anchorText in the document.
+   * This enables API/MCP-created comments to have inline anchors, just like
+   * comments created via the web UI text selection.
+   *
+   * @param document The document to modify. Must have content and optionally state.
+   * @param anchorText The text to anchor the comment to.
+   * @param commentId The unique ID for the comment mark.
+   * @param userId The ID of the user creating the comment.
+   * @returns True if the anchor text was found and the mark was applied.
+   */
+  static addCommentAnchor(
+    document: Document,
+    anchorText: string,
+    commentId: string,
+    userId: string
+  ): boolean {
+    const doc = DocumentHelper.toProsemirror(document);
+    const transform = new Transform(doc);
+
+    let found = false;
+    doc.descendants((node, pos) => {
+      if (found) {
+        return false;
+      }
+      if (node.isText && node.text) {
+        const idx = node.text.indexOf(anchorText);
+        if (idx >= 0) {
+          transform.addMark(
+            pos + idx,
+            pos + idx + anchorText.length,
+            schema.marks.comment.create({
+              id: commentId,
+              userId,
+              resolved: false,
+              draft: false,
+            })
+          );
+          found = true;
+        }
+      }
+      return true;
+    });
+
+    if (!found) {
+      return false;
+    }
+
+    const newDoc = transform.doc;
+    document.content = newDoc.toJSON();
+    document.text = serializer.serialize(newDoc);
+
+    if (document.state) {
+      const ydoc = new Y.Doc();
+      Y.applyUpdate(ydoc, document.state);
+      const type = ydoc.get("default", Y.XmlFragment) as Y.XmlFragment;
+
+      if (type.doc) {
+        updateYFragment(type.doc, type, newDoc, {
+          mapping: new Map(),
+          isOMark: new Map(),
+        });
+        document.state = Buffer.from(Y.encodeStateAsUpdate(ydoc));
+        document.changed("state", true);
+      }
+    }
+
+    return true;
+  }
+
+  /**
    * Attempt an inline-level patch within a single textblock node. Returns the
    * patched block node on success, or undefined if an inline patch is not
    * possible and the caller should fall back to block-level replacement.
@@ -1019,6 +1156,37 @@ export class DocumentHelper {
       replacementContent = Fragment.from(schema.text(replacementText));
     } else {
       replacementContent = firstBlock.content;
+    }
+
+    // Collect comment marks from the text being removed so they can be
+    // re-anchored onto the replacement text.
+    const removedFragment = blockNode.content.cut(pmInlineFrom, pmInlineTo);
+    const displacedCommentMarks: Mark[] = [];
+    removedFragment.forEach((child) => {
+      child.marks.forEach((mark) => {
+        if (
+          mark.type.name === "comment" &&
+          !displacedCommentMarks.some((m) => m.attrs.id === mark.attrs.id)
+        ) {
+          displacedCommentMarks.push(mark);
+        }
+      });
+    });
+
+    if (displacedCommentMarks.length > 0) {
+      const markedChildren: Node[] = [];
+      replacementContent.forEach((child) => {
+        const existingCommentIds = new Set(
+          child.marks
+            .filter((m) => m.type.name === "comment")
+            .map((m) => m.attrs.id)
+        );
+        const marksToAdd = displacedCommentMarks.filter(
+          (m) => !existingCommentIds.has(m.attrs.id)
+        );
+        markedChildren.push(child.mark([...child.marks, ...marksToAdd]));
+      });
+      replacementContent = Fragment.from(markedChildren);
     }
 
     // Splice: keep inline content before match + replacement + after match.

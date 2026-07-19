@@ -836,6 +836,235 @@ describe("documentUpdater", () => {
       });
     });
 
+    it("should transfer comment mark to replacement when patching the commented text", async () => {
+      const user = await buildUser();
+      let document = await buildDocument({
+        teamId: user.teamId,
+      });
+      const commentId = randomUUID();
+
+      // Paragraph: "Hello " + "world"(with comment mark) + " end"
+      document.content = {
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [
+              { type: "text", text: "Hello " },
+              {
+                type: "text",
+                marks: [
+                  {
+                    type: "comment",
+                    attrs: { id: commentId, userId: commentId },
+                  },
+                ],
+                text: "world",
+              },
+              { type: "text", text: " end" },
+            ],
+          },
+        ],
+      };
+      await document.save();
+
+      // Patch the commented text "world" -> "earth"
+      const result = DocumentHelper.applyMarkdownToDocument(
+        document,
+        "earth",
+        TextEditMode.Patch,
+        "world"
+      );
+      const content = result.content!.content!;
+
+      expect(content).toHaveLength(1);
+      // The comment mark must be transferred to the replacement text
+      expect(content[0]).toMatchObject({
+        type: "paragraph",
+        content: [
+          { type: "text", text: "Hello " },
+          {
+            type: "text",
+            marks: [
+              {
+                type: "comment",
+                attrs: { id: commentId, userId: commentId },
+              },
+            ],
+            text: "earth",
+          },
+          { type: "text", text: " end" },
+        ],
+      });
+    });
+
+    it("should transfer multiple comment marks to replacement", async () => {
+      const user = await buildUser();
+      let document = await buildDocument({
+        teamId: user.teamId,
+      });
+      const commentId1 = randomUUID();
+      const commentId2 = randomUUID();
+
+      // Two overlapping comment marks on the same text
+      document.content = {
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [
+              {
+                type: "text",
+                marks: [
+                  {
+                    type: "comment",
+                    attrs: { id: commentId1, userId: commentId1 },
+                  },
+                  {
+                    type: "comment",
+                    attrs: { id: commentId2, userId: commentId2 },
+                  },
+                ],
+                text: "tagged",
+              },
+            ],
+          },
+        ],
+      };
+      await document.save();
+
+      const result = DocumentHelper.applyMarkdownToDocument(
+        document,
+        "renamed",
+        TextEditMode.Patch,
+        "tagged"
+      );
+      const content = result.content!.content!;
+
+      expect(content).toHaveLength(1);
+      const replacementNode = content[0].content[0];
+      expect(replacementNode.text).toEqual("renamed");
+      const markIds = replacementNode.marks.map(
+        (m: { attrs: { id: string } }) => m.attrs.id
+      );
+      expect(markIds).toEqual(
+        expect.arrayContaining([commentId1, commentId2])
+      );
+      expect(markIds).toHaveLength(2);
+    });
+
+    it("should preserve comment marks through replace mode when anchor text survives", async () => {
+      const user = await buildUser();
+      let document = await buildDocument({
+        teamId: user.teamId,
+      });
+      const commentId = randomUUID();
+
+      document.content = {
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [
+              { type: "text", text: "Some intro text." },
+            ],
+          },
+          {
+            type: "paragraph",
+            content: [
+              {
+                type: "text",
+                marks: [
+                  {
+                    type: "comment",
+                    attrs: { id: commentId, userId: commentId },
+                  },
+                ],
+                text: "Anchored phrase",
+              },
+            ],
+          },
+        ],
+      };
+      await document.save();
+
+      // Replace entire document — the anchor text survives unchanged
+      const result = DocumentHelper.applyMarkdownToDocument(
+        document,
+        "Different intro.\n\nAnchored phrase\n\nMore text.",
+        TextEditMode.Replace
+      );
+      const content = result.content!.content!;
+
+      // Find the text node with "Anchored phrase"
+      let foundMark = false;
+      function walk(node: any) {
+        if (node.text === "Anchored phrase" && node.marks) {
+          foundMark = node.marks.some(
+            (m: any) => m.type === "comment" && m.attrs.id === commentId
+          );
+        }
+        if (node.content) {
+          node.content.forEach(walk);
+        }
+      }
+      content.forEach(walk);
+
+      expect(foundMark).toBe(true);
+    });
+
+    it("should lose comment marks through replace mode when anchor text is removed", async () => {
+      const user = await buildUser();
+      let document = await buildDocument({
+        teamId: user.teamId,
+      });
+      const commentId = randomUUID();
+
+      document.content = {
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [
+              {
+                type: "text",
+                marks: [
+                  {
+                    type: "comment",
+                    attrs: { id: commentId, userId: commentId },
+                  },
+                ],
+                text: "Old text",
+              },
+            ],
+          },
+        ],
+      };
+      await document.save();
+
+      // Replace entire document — anchor text does NOT survive
+      const result = DocumentHelper.applyMarkdownToDocument(
+        document,
+        "Completely new content without the old phrase.",
+        TextEditMode.Replace
+      );
+      const content = result.content!.content!;
+
+      // Verify no comment marks exist
+      let hasComment = false;
+      function walk(node: any) {
+        if (node.marks) {
+          hasComment = hasComment || node.marks.some((m: any) => m.type === "comment");
+        }
+        if (node.content) {
+          node.content.forEach(walk);
+        }
+      }
+      content.forEach(walk);
+
+      expect(hasComment).toBe(false);
+    });
+
     it("should preserve rich content in other checklist items when patching one item", async () => {
       const user = await buildUser();
       let document = await buildDocument({
